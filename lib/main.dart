@@ -31,6 +31,7 @@ class _BleScannerAppState extends State<BleScannerApp> {
   StreamSubscription<BluetoothAdapterState>? _adapterStateSubscription;
   List<ScanResult> _scanResults = [];
   String _deviceDetails = "";
+  double? _gripPower; // Variable to hold grip power value
 
   Future<void> _startScan() async {
     await _checkPermissions();
@@ -90,20 +91,67 @@ class _BleScannerAppState extends State<BleScannerApp> {
                 isUtc: true,
               );
               dateString =
-                  ' (Manufacturer Date: ${date.toLocal().toString().split(' ').first})';
+                  ' (Manufacturer Details: ${date.toLocal().toString().split(' ').first})';
             }
             return '${e.key}: ${e.value}$dateString';
           })
           .join(', ');
+      String details =
+          'Connected to: ${result.device.name.isNotEmpty ? result.device.name : result.device.remoteId}\n'
+          'Manufacturer Details: $manufacturerDetails\n'
+          'RSSI: ${result.rssi}\n\n'
+          'Services discovered:\n';
+
+      final device = result.device;
+      List<BluetoothService> services = await device.discoverServices();
+      for (var service in services) {
+        details += 'Service: ${service.uuid}\n';
+        if (service.characteristics.isEmpty) {
+          details += '  No characteristics\n';
+        } else {
+          for (var characteristic in service.characteristics) {
+            details += '  Characteristic: ${characteristic.uuid}\n';
+            details +=
+                '    Properties: '
+                '${characteristic.properties.read ? "read " : ""}'
+                '${characteristic.properties.write ? "write " : ""}'
+                '${characteristic.properties.notify ? "notify " : ""}\n';
+          }
+        }
+        details += '\n';
+      }
+
       setState(() {
-        _deviceDetails =
-            'Connected to: ${result.device.name.isNotEmpty ? result.device.name : result.device.remoteId}\n'
-            'Manufacturer Details : $manufacturerDetails\n'
-            'RSSI: ${result.rssi}';
+        _deviceDetails = details;
+        _gripPower = null; // Reset grip power on new connection
       });
+
+      // Listen for grip power notifications, ignore the first value
+      for (var service in services) {
+        for (var characteristic in service.characteristics) {
+          if (characteristic.properties.notify) {
+            await characteristic.setNotifyValue(true);
+            bool isFirst = true;
+            characteristic.lastValueStream.listen((value) {
+              if (isFirst) {
+                isFirst = false;
+                return; // Ignore the first value (likely stale)
+              }
+              final gripPower = value.isNotEmpty ? value[0] : null;
+              // Only update if gripPower is not null and > 0
+              if (gripPower != null && gripPower > 0) {
+                setState(() {
+                  _gripPower = gripPower.toDouble();
+                });
+              }
+            });
+          }
+        }
+      }
     } catch (e) {
       setState(() {
         _deviceDetails = "Connection failed: $e";
+        _gripPower = null;
       });
     }
   }
@@ -117,6 +165,18 @@ class _BleScannerAppState extends State<BleScannerApp> {
         appBar: AppBar(title: const Text('BLE Scanner')),
         body: Column(
           children: [
+            if (_gripPower != null)
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text(
+                  'Grip Power: $_gripPower',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.green,
+                  ),
+                ),
+              ),
             if (_deviceDetails.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.all(8.0),
@@ -133,9 +193,22 @@ class _BleScannerAppState extends State<BleScannerApp> {
                   return ListTile(
                     title: Text(name),
                     subtitle: Text('RSSI: ${result.rssi}'),
-                    trailing: ElevatedButton(
-                      child: Text('Connect'),
-                      onPressed: () => _connectToDevice(result),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (result
+                            .advertisementData
+                            .manufacturerData
+                            .isNotEmpty)
+                          Text(
+                            'Manufacturer: ${result.advertisementData.manufacturerData.keys.join(", ")}',
+                          ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          child: Text('Connect'),
+                          onPressed: () => _connectToDevice(result),
+                        ),
+                      ],
                     ),
                   );
                 },
