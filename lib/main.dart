@@ -28,10 +28,9 @@ Future<void> _checkPermissions() async {
 
 class _BleScannerAppState extends State<BleScannerApp> {
   StreamSubscription<List<ScanResult>>? _scanSubscription;
-  StreamSubscription<BluetoothAdapterState>? _adapterStateSubscription;
   List<ScanResult> _scanResults = [];
   String _deviceDetails = "";
-  double? _gripPower; // Variable to hold grip power value
+  double? _gripPower;
 
   Future<void> _startScan() async {
     await _checkPermissions();
@@ -46,10 +45,10 @@ class _BleScannerAppState extends State<BleScannerApp> {
 
     await _scanSubscription?.cancel();
     _scanResults.clear();
-    setState(() {}); // Refresh UI
+    setState(() {});
 
     _scanSubscription = FlutterBluePlus.onScanResults.listen(
-      (results) async {
+      (results) {
         setState(() {
           _scanResults = results;
         });
@@ -63,10 +62,9 @@ class _BleScannerAppState extends State<BleScannerApp> {
     );
 
     try {
-      await FlutterBluePlus.startScan(timeout: Duration(seconds: 15));
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
       await FlutterBluePlus.isScanning.where((val) => val == false).first;
     } catch (e) {
-      print("Failed to start scan: $e");
       setState(() {
         _deviceDetails = "Failed to start scan: $e";
       });
@@ -75,79 +73,28 @@ class _BleScannerAppState extends State<BleScannerApp> {
 
   Future<void> _connectToDevice(ScanResult result) async {
     try {
-      await result.device.connect(timeout: Duration(seconds: 10));
-      final adv = result.advertisementData;
-      final manufacturerDetails = adv.manufacturerData.entries
-          .map((e) {
-            String dateString = '';
-            if (e.value.length >= 4) {
-              final timestamp =
-                  (e.value[0] << 24) |
-                  (e.value[1] << 16) |
-                  (e.value[2] << 8) |
-                  (e.value[3]);
-              final date = DateTime.fromMillisecondsSinceEpoch(
-                timestamp * 1000,
-                isUtc: true,
-              );
-              dateString =
-                  ' (Manufacturer Details: ${date.toLocal().toString().split(' ').first})';
-            }
-            return '${e.key}: ${e.value}$dateString';
-          })
-          .join(', ');
-      String details =
-          'Connected to: ${result.device.name.isNotEmpty ? result.device.name : result.device.remoteId}\n'
-          'Manufacturer Details: $manufacturerDetails\n'
-          'RSSI: ${result.rssi}\n\n'
-          'Services discovered:\n';
+      await result.device.connect(timeout: const Duration(seconds: 5));
 
       final device = result.device;
-      List<BluetoothService> services = await device.discoverServices();
-      for (var service in services) {
-        details += 'Service: ${service.uuid}\n';
-        if (service.characteristics.isEmpty) {
-          details += '  No characteristics\n';
-        } else {
-          for (var characteristic in service.characteristics) {
-            details += '  Characteristic: ${characteristic.uuid}\n';
-            details +=
-                '    Properties: '
-                '${characteristic.properties.read ? "read " : ""}'
-                '${characteristic.properties.write ? "write " : ""}'
-                '${characteristic.properties.notify ? "notify " : ""}\n';
-          }
-        }
-        details += '\n';
-      }
+      final services = await device.discoverServices();
 
-      setState(() {
-        _deviceDetails = details;
-        _gripPower = null; // Reset grip power on new connection
-      });
-
-      // Listen for grip power notifications, ignore the first value
       for (var service in services) {
         for (var characteristic in service.characteristics) {
           if (characteristic.properties.notify) {
             await characteristic.setNotifyValue(true);
-            bool isFirst = true;
             characteristic.lastValueStream.listen((value) {
-              if (isFirst) {
-                isFirst = false;
-                return; // Ignore the first value (likely stale)
-              }
-              final gripPower = value.isNotEmpty ? value[0] : null;
-              // Only update if gripPower is not null and > 0
-              if (gripPower != null && gripPower > 0) {
-                setState(() {
-                  _gripPower = gripPower.toDouble();
-                });
-              }
+              final gripPower = value.isNotEmpty ? value[0].toDouble() : null;
+              setState(() {
+                _gripPower = gripPower;
+              });
             });
           }
         }
       }
+
+      setState(() {
+        _deviceDetails = "Connected to: ${device.name} (${device.remoteId})";
+      });
     } catch (e) {
       setState(() {
         _deviceDetails = "Connection failed: $e";
@@ -157,7 +104,20 @@ class _BleScannerAppState extends State<BleScannerApp> {
   }
 
   @override
+  void dispose() {
+    _scanSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final filteredResults = _scanResults
+        .where(
+          (r) =>
+              r.device.remoteId.toString().toUpperCase() == "DE:97:8C:D9:BE:7F",
+        )
+        .toList();
+
     return MaterialApp(
       title: 'BLE Scanner',
       theme: ThemeData(primarySwatch: Colors.blue),
@@ -169,9 +129,9 @@ class _BleScannerAppState extends State<BleScannerApp> {
               Padding(
                 padding: const EdgeInsets.all(8.0),
                 child: Text(
-                  'Grip Power: $_gripPower',
-                  style: TextStyle(
-                    fontSize: 20,
+                  'Grip Power: ${_gripPower!.toStringAsFixed(1)}',
+                  style: const TextStyle(
+                    fontSize: 24,
                     fontWeight: FontWeight.bold,
                     color: Colors.green,
                   ),
@@ -184,31 +144,18 @@ class _BleScannerAppState extends State<BleScannerApp> {
               ),
             Expanded(
               child: ListView.builder(
-                itemCount: _scanResults.length,
+                itemCount: filteredResults.length,
                 itemBuilder: (context, index) {
-                  final result = _scanResults[index];
+                  final result = filteredResults[index];
                   final name = result.device.name.isNotEmpty
                       ? result.device.name
                       : result.device.remoteId.toString();
                   return ListTile(
                     title: Text(name),
                     subtitle: Text('RSSI: ${result.rssi}'),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (result
-                            .advertisementData
-                            .manufacturerData
-                            .isNotEmpty)
-                          Text(
-                            'Manufacturer: ${result.advertisementData.manufacturerData.keys.join(", ")}',
-                          ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          child: Text('Connect'),
-                          onPressed: () => _connectToDevice(result),
-                        ),
-                      ],
+                    trailing: ElevatedButton(
+                      child: const Text('Connect'),
+                      onPressed: () => _connectToDevice(result),
                     ),
                   );
                 },
